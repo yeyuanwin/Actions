@@ -7,10 +7,10 @@
 3. Fork或者手动导入这个Repo,看你喜好(防止被Github一锅端)
 4. 启用Actions,新建一个叫做`AUTH_JSON`的Secret,并将之前的`device_auths.json`文件内容粘贴进去。
 5. 修改.github/workflows/claim.yml文件,改改自动领取时间什么的。
-    ```  
+   
 schedule:
     - cron:  '51 16 * * 4'    #修改成其他时间（4改成*就是每天执行一次的意思）
-    ```
+ 
 
 ## 多账户
 最后获得的json大概长这样
@@ -59,3 +59,5 @@ schedule:
     }
 }
 ```
+## 致谢
+感谢Revadike大佬的epicgames-freebies-claimer,本Repo是在他程序的基础上修改而来的。
