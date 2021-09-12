@@ -60,4 +60,4 @@ schedule:
 }
 ```
 ## 致谢
-感谢Revadike大佬的epicgames-freebies-claimer,本Repo是在他程序的基础上修改而来的。
+感谢[Revadike大佬](https://github.com/Revadike)的[epicgames-freebies-claimer](https://github.com/Revadike/epicgames-freebies-claimer),本Repo是在他程序的基础上修改而来的。
