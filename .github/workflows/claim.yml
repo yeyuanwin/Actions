@@ -3,7 +3,6 @@ on:
   workflow_dispatch:
   schedule:
     - cron: "0 3,9,17 * * *"
-
 jobs:
   EFC:
     name: Claim Freebie
