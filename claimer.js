@@ -1,31 +1,50 @@
 "use strict";
 
+const { writeFile, writeFileSync, existsSync, readFileSync } = require("fs");
+if (!existsSync(`${__dirname}/data/config.json`)) {
+    writeFileSync(`${__dirname}/data/config.json`, readFileSync(`${__dirname}/data/config.example.json`));
+}
+if (!existsSync(`${__dirname}/data/history.json`)) {
+    writeFileSync(`${__dirname}/data/history.json`, "{}");
+}
+
 const { "Launcher": EpicGames } = require("epicgames-client");
-const { freeGamesPromotions } = require("./src/gamePromotions");
-const { writeFile } = require("fs");
-
-const Auths = require(`${__dirname}/device_auths.json`);
-const CheckUpdate = require("check-update-github");
-const Config = require(`${__dirname}/config.json`);
-const History = require(`${__dirname}/history.json`);
+const { freeGamesPromotions } = require(`${__dirname}/src/gamePromotions`);
+const { latestVersion } = require(`${__dirname}/src/latestVersion.js`);
+const Auths = require(`${__dirname}/data/device_auths.json`);
+const Config = require(`${__dirname}/data/config.json`);
+const Fork = require("child_process");
+const History = require(`${__dirname}/data/history.json`);
 const Logger = require("tracer").console(`${__dirname}/logger.js`);
-const Package = require("./package.json");
+const Package = require(`${__dirname}/package.json`);
 
-function isUpToDate() {
-    return new Promise((res, rej) => {
-        CheckUpdate({
-            "name":           Package.name,
-            "currentVersion": Package.version,
-            "user":           "revadike",
-            "branch":         "master",
-        }, (err, latestVersion) => {
-            if (err) {
-                rej(err);
-            } else {
-                res(latestVersion === Package.version);
-            }
-        });
-    });
+function appriseNotify(appriseUrl, notificationMessages) {
+    if (!appriseUrl || notificationMessages.length === 0) {
+        return;
+    }
+
+    let notification = notificationMessages.join("\n");
+    try {
+        let s = Fork.spawnSync("apprise", [
+            "-vv",
+            "-t",
+            `Epicgames Freebies Claimer ${Package.version}`,
+            "-b",
+            notification,
+            appriseUrl,
+        ]);
+
+        let output = s.stdout ? s.stdout.toString() : "ERROR: Maybe apprise not found?";
+        if (output && output.includes("ERROR")) {
+            Logger.error(`Failed to send push notification (${output})`);
+        } else if (output) {
+            Logger.info("Push notification sent");
+        } else {
+            Logger.warn("No output from apprise");
+        }
+    } catch (err) {
+        Logger.error(`Failed to send push notification (${err})`);
+    }
 }
 
 function write(path, data) {
@@ -38,20 +57,33 @@ function sleep(delay) {
 }
 
 (async() => {
-    let { options, delay, loop } = Config;
+    let { options, delay, loop, appriseUrl } = Config;
+
     do {
-        if (!await isUpToDate()) {
-            Logger.warn(`There is a new version available: ${Package.url}`);
+        Logger.info(`Epicgames Freebies Claimer (${Package.version}) by ${Package.author.name || Package.author}`);
+
+        let latest = await latestVersion().catch((err) => {
+            Logger.error(`Failed to check for updates (${err})`);
+        });
+
+        if (latest && latest !== Package.version) {
+            Logger.warn(`There is a new release available (${latest}): ${Package.url}`);
         }
 
+        let notificationMessages = [];
         for (let email in Auths) {
             let { country } = Auths[email];
             let claimedPromos = History[email] || [];
+            let newlyClaimedPromos = [];
             let useDeviceAuth = true;
-            let clientOptions = { email, ...options };
+            let rememberDevicesPath = `${__dirname}/data/device_auths.json`;
+            let clientOptions = { email, ...options, rememberDevicesPath };
             let client = new EpicGames(clientOptions);
+
             if (!await client.init()) {
-                Logger.error("Error while initialize process.");
+                let errMess = "Error while initialize process.";
+                notificationMessages.push(errMess);
+                Logger.error(errMess);
                 break;
             }
 
@@ -63,24 +95,28 @@ function sleep(delay) {
 
             Logger.info(`Found ${unclaimedPromos.length} unclaimed freebie(s) for ${email}`);
             if (unclaimedPromos.length === 0) {
+                notificationMessages.push(`${email} has no unclaimed freebies`);
                 continue;
             }
 
             let success = await client.login({ useDeviceAuth }).catch(() => false);
             if (!success) {
-                Logger.error(`Failed to login as ${client.config.email}`);
+                let errMess = `Failed to login as ${email}`;
+                notificationMessages.push(errMess);
+                Logger.error(errMess);
                 continue;
             }
 
             Logger.info(`Logged in as ${client.account.name} (${client.account.id})`);
             Auths[email].country = client.account.country;
-            write(`${__dirname}/device_auths.json`, JSON.stringify(Auths, null, 4)).catch(() => false); // ignore fails
+            write(rememberDevicesPath, JSON.stringify(Auths, null, 4)).catch(() => false); // ignore fails
 
             for (let offer of unclaimedPromos) {
                 try {
                     let purchased = await client.purchase(offer, 1);
                     if (purchased) {
                         Logger.info(`Successfully claimed ${offer.title} (${purchased})`);
+                        newlyClaimedPromos.push(offer.title);
                     } else {
                         Logger.warn(`${offer.title} was already claimed for this account`);
                     }
@@ -88,23 +124,36 @@ function sleep(delay) {
                     offer.date = Date.now();
                     claimedPromos.push(offer);
                 } catch (err) {
+                    notificationMessages.push(`${email} failed to claim ${offer.title}`);
                     Logger.warn(`Failed to claim ${offer.title} (${err})`);
                     if (err.response
                         && err.response.body
                         && err.response.body.errorCode === "errors.com.epicgames.purchase.purchase.captcha.challenge") {
                         // It's pointless to try next one as we'll be asked for captcha again.
-                        Logger.error("Aborting!");
+                        let errMess = "Aborting! Captcha detected.";
+                        notificationMessages.push(errMess);
+                        Logger.error(errMess);
                         break;
                     }
                 }
             }
 
             History[email] = claimedPromos;
+
+            // Setting up notification message for current account
+            if (newlyClaimedPromos.length > 0) {
+                notificationMessages.push(`${email} claimed ${newlyClaimedPromos.length} freebies: ${
+                    newlyClaimedPromos.join(", ")}`);
+            } else {
+                notificationMessages.push(`${email} has claimed 0 freebies`);
+            }
+
             await client.logout();
             Logger.info(`Logged ${client.account.name} out of Epic Games`);
         }
+        appriseNotify(appriseUrl, notificationMessages);
 
-        await write(`${__dirname}/history.json`, JSON.stringify(History, null, 4));
+        await write(`${__dirname}/data/history.json`, JSON.stringify(History, null, 4));
         if (loop) {
             Logger.info(`Waiting ${delay} minutes`);
             await sleep(delay);
